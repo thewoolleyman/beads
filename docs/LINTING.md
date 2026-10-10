@@ -1,11 +1,10 @@
 # Linting Policy
 
-Last reviewed: 2026-05-29
+Last reviewed: 2026-10-10
 
 Freshness source: `.golangci.yml`, `.github/workflows/pr.yml`,
-`.github/workflows/main.yml`, and
-`golangci-lint run --timeout=5m --build-tags=gms_pure_go ./...` returning zero
-issues.
+`.github/workflows/main.yml`, and `scripts/ci/pr-lint.sh`.
+The review date records source review; execution receipts are separate.
 
 This document explains the required Go lint gate for this codebase.
 
@@ -15,10 +14,10 @@ Lint is a required CI gate. The PR and main workflows run `golangci-lint` with
 the repository configuration and `--build-tags=gms_pure_go`; it is expected to
 pass with zero issues.
 
-Run the same check locally with:
+CI pins golangci-lint v2.9.0. Run its repository wrapper locally with:
 
 ```bash
-golangci-lint run --timeout=5m --build-tags=gms_pure_go ./...
+make ci-pr-lint
 ```
 
 Formatting is a separate required gate:
@@ -46,7 +45,7 @@ test-fixture file reads, and documented security false positives.
 ## CI Cleanup Decision
 
 `pr-lint` should stay separate from `pr-policy` and `pr-core` so failures are
-easy to identify and rerun. It should include:
+easy to identify and rerun. The implemented `scripts/ci/pr-lint.sh` wrapper includes:
 
 - `make fmt-check`
 - `golangci-lint run --timeout=5m --build-tags=gms_pure_go ./...`
@@ -55,8 +54,5 @@ See [`CI_CLEANUP_PLAN.md`](CI_CLEANUP_PLAN.md) for the full CI tier policy.
 
 ## Future Work
 
-- Pin the `golangci-lint` version in CI instead of using `version: latest`.
-- Move the final CI shape behind a repository-owned `scripts/ci/pr-lint.sh`
-  wrapper.
 - Periodically audit `.golangci.yml` exclusions and remove entries that are no
   longer needed.

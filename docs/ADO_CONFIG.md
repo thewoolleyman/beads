@@ -1,8 +1,8 @@
 # Azure DevOps (ADO) Integration Configuration
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-10-10
 
-Freshness source: `cmd/bd/ado*.go` and `internal/ado/`.
+Freshness source: `cmd/bd/ado*.go`, `cmd/bd/sync_flags.go`, and `internal/ado/`.
 
 This guide covers all configuration options for the `bd ado sync` command, which synchronizes beads issues with Azure DevOps work items.
 
@@ -73,8 +73,8 @@ Filters control which ADO work items are included in sync operations.
 
 | Config Key | CLI Flag | Description | Example |
 |---|---|---|---|
-| `ado.filter.area_path` | `--area-path` | Area path (uses UNDER) | `Project\Team` |
-| `ado.filter.iteration_path` | `--iteration-path` | Sprint/iteration path | `Project\Sprint 1` |
+| `ado.filter.area_path` | `--area-path` | Pull area path (uses UNDER) | `Project\Team` |
+| `ado.filter.iteration_path` | `--iteration-path` | Pull sprint/iteration path | `Project\Sprint 1` |
 | `ado.filter.types` | `--types` | Work item types (comma-separated) | `Bug,Task,User Story` |
 | `ado.filter.states` | `--states` | ADO states (comma-separated) | `New,Active,Resolved` |
 
@@ -96,7 +96,8 @@ SELECT [System.Id] FROM WorkItems WHERE
 
 ### Priority Mapping
 
-Priority mapping is bidirectional but **lossy for P3/P4**:
+The scalar priority mapping is ambiguous for P3/P4; the supported round trip
+uses original-priority metadata to preserve that distinction:
 
 | Beads Priority | ADO Priority | Direction | Notes |
 |---|---|---|---|
@@ -104,9 +105,12 @@ Priority mapping is bidirectional but **lossy for P3/P4**:
 | 1 (High) | 2 | ↔ | |
 | 2 (Medium) | 3 | ↔ | Default for unknown values |
 | 3 (Low) | 4 | → | |
-| 4 (Backlog) | 4 | → | **Lossy**: becomes P3 on pull |
+| 4 (Backlog) | 4 | → | P4 preserved when original marker is retained |
 
-> **Note:** Beads P3 and P4 both map to ADO priority 4. On a fresh pull into an empty database, ADO 4 maps back to beads P3. The original priority is not preserved across a full round-trip for P4 issues.
+> **Note:** Beads P3 and P4 both map to ADO priority 4. The `beads_priority`
+> metadata marker preserves the original priority when retained by the round
+> trip. Without that marker, ADO 4 maps to Beads P3. Do not assume a fresh
+> independent pull has the original local marker.
 
 For Bug-type work items, ADO also requires a Severity field:
 
@@ -245,10 +249,10 @@ When the same issue has been modified both locally and in ADO:
 | `--no-create` | Only update existing items, never create new ones |
 | `--bootstrap-match` | Enable heuristic title matching for first sync |
 | `--reconcile` | Force reconciliation scan for deleted items |
-| `--issues` | Sync specific issues by bead ID or ADO work item ID |
-| `--label` | Filter by label |
-| `--status` | Filter by beads status |
-| `--type` | Filter by beads issue type |
+| `--issues` | Sync specific Beads issue IDs |
+| `--parent` | Push-only parent selection; mutually exclusive with `--issues` |
+| `--project` | Override configured projects (string slice) |
+| `--types` / `--states` | ADO-side work item type/state filters, not Beads selectors |
 
 ## PAT Permissions
 
@@ -298,14 +302,14 @@ beads stores ADO-specific metadata for round-trip fidelity:
 
 ### Common Errors
 
-**"Azure DevOps PAT not configured"**
+**"ado.pat not configured"**
 ```bash
 bd config set ado.pat "your-pat-here"
 # or
 export AZURE_DEVOPS_PAT="your-pat-here"
 ```
 
-**"Azure DevOps organization not configured"**
+**"ado.org not configured"**
 ```bash
 bd config set ado.org "your-org"
 # or for on-prem:
@@ -324,8 +328,8 @@ Verify your `ado.type_map.*` config matches the work item types available in you
 # Preview what would happen
 bd ado sync --dry-run
 
-# Check current config
-bd config get ado.pat
+# Check credential configuration without printing the PAT
+bd ado status
 bd config get ado.org
 bd config get ado.project
 ```

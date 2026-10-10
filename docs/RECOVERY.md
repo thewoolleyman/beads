@@ -1,8 +1,8 @@
 # Recovery Playbooks
 
-Last reviewed: 2026-06-09
+Last reviewed: 2026-10-10
 
-Freshness source: `cmd/bd/init.go`, `cmd/bd/init_safety.go`,
+Freshness source: `cmd/bd/bootstrap.go`, `internal/storage/dolt/bootstrap.go`, `cmd/bd/init.go`, `cmd/bd/init_safety.go`,
 `cmd/bd/init_safety_test.go`, and `cmd/bd/dolt.go`.
 
 This document lives next to the ADRs and matches the structure of `bd`'s
@@ -223,16 +223,27 @@ asking about.)
 
 ### 3. On EVERY other clone: save local-only work, re-clone, re-apply
 
-```
-bd export --all -o /tmp/beads-local.jsonl    # safety net for un-synced work
-rm -rf .beads/dolt                           # discard the un-mergeable history
-bd bootstrap                                 # re-clone from the remote
-bd import /tmp/beads-local.jsonl             # re-apply local-only work
+First preserve a verified full database backup and an issue-level safety net:
+
+```bash
+bd export --all -o /tmp/beads-local.jsonl
+bd bootstrap --dry-run
 ```
 
-`bd import` has upsert semantics: issues that only existed on this clone are
-re-created, newer local edits are applied, and rows older than what the
-remote already has are skipped. Spot-check with `bd stats` afterwards.
+The JSONL export does not preserve complete Dolt history. Inspect the resolved
+storage mode and destination before preparing a clone of canonical history.
+For a project-owned local server, stop that server and verify its configured
+data directory before changing it. Embedded mode uses `.beads/embeddeddolt`;
+an external/shared server owns its database remotely. Deleting `.beads/dolt`
+is not a generic recovery procedure and cannot repair a remote database.
+
+Bootstrap is non-destructive, not a universal overwrite command. An existing
+database without a selected remote can produce no action; CLI clone skips an
+existing destination, while embedded/external clone paths propagate clone
+errors. Prepare the appropriate owned destination using the mode-specific
+recovery procedure, then bootstrap and reapply local-only issues from the
+export if needed. Inspect the resulting issue inventory and history before
+resuming writers.
 
 ### Prevention (upgrades across PK-reshaping migrations)
 
@@ -243,8 +254,8 @@ remote already has are skipped. Spot-check with `bd stats` afterwards.
 - **One designated migrator**: upgrade one machine, let it migrate, then
   `bd dolt push`.
 - **Every other clone adopts, does not pull**: after the migrator pushes, each
-  other clone upgrades the binary and runs `bd bootstrap` to adopt the migrated
-  database. `bd dolt pull` is *refused* while the clone still has pending
+  other clone upgrades the binary and prepares the appropriate owned destination
+  before using `bd bootstrap` to adopt the migrated database. `bd dolt pull` is *refused* while the clone still has pending
   migrations, so do not rely on it; the "sync before" step above is what
-  preserves these clones' work, because `bd bootstrap` replaces the local
-  database.
+  preserves these clones' work. Bootstrap does not unconditionally replace an
+  existing database; inspect `bd bootstrap --dry-run` and the storage mode first.

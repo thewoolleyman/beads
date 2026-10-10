@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -64,7 +65,9 @@ func wrapWithSchemaVersion(v interface{}) interface{} {
 		return v
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber() // Preserve exact metadata numbers used as conditional priors.
+	if err := decoder.Decode(&m); err != nil {
 		return v
 	}
 	m["schema_version"] = JSONSchemaVersion

@@ -1,9 +1,10 @@
 # Configuration System
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-10-10
 
 Freshness source: `cmd/bd/main.go`, `cmd/bd/config.go`, and
-`internal/configfile/`.
+`internal/configfile/`, `internal/config/config.go`,
+`internal/storage/issueops/helpers.go`, and `cmd/bd/export.go`.
 
 bd has two complementary configuration systems:
 
@@ -41,10 +42,10 @@ Common tool-level settings you can configure:
 | Setting | Flag | Environment Variable | Default | Description |
 |---------|------|---------------------|---------|-------------|
 | `json` | `--json` | `BD_JSON` | `false` | Output in JSON format |
-| `no-push` | `--no-push` | `BD_NO_PUSH` | `false` | Skip pushing to remote in `bd dolt push` |
+| `no-push` | - | `BD_NO_PUSH` | `false` | Skip pushing to remote in `bd dolt push` |
 | `federation.remote` | - | `BD_FEDERATION_REMOTE` | (none) | Dolt remote URL for federation |
 | `federation.sovereignty` | - | `BD_FEDERATION_SOVEREIGNTY` | (none) | Data sovereignty tier: `T1`, `T2`, `T3`, `T4` |
-| `dolt.auto-commit` | `--dolt-auto-commit` | `BD_DOLT_AUTO_COMMIT` | `on` | (Dolt backend) Automatically create a Dolt commit after successful write commands |
+| `dolt.auto-commit` | `--dolt-auto-commit` | `BD_DOLT_AUTO_COMMIT` | See note below | (Dolt backend) Automatically create a Dolt commit after successful write commands |
 | `create.require-description` | - | `BD_CREATE_REQUIRE_DESCRIPTION` | `false` | Require description when creating issues |
 | `validation.on-create` | - | `BD_VALIDATION_ON_CREATE` | `none` | Template validation on create: `none`, `warn`, `error` |
 | `validation.on-sync` | - | `BD_VALIDATION_ON_SYNC` | `none` | Template validation before sync: `none`, `warn`, `error` |
@@ -57,7 +58,7 @@ Common tool-level settings you can configure:
 | `dolt.auto-push` | - | `BD_DOLT_AUTO_PUSH` | `false` | Auto-push to Dolt remote after writes (explicit opt-in) |
 | `dolt.auto-push-interval` | - | `BD_DOLT_AUTO_PUSH_INTERVAL` | `5m` | Minimum time between auto-pushes |
 | `dolt.auto-push-timeout` | - | `BD_DOLT_AUTO_PUSH_TIMEOUT` | `30s` | Timeout for a single auto-push attempt |
-| `dolt.shared-server` | `--shared-server` | `BEADS_DOLT_SHARED_SERVER` | `false` | Share a single Dolt server across all projects at `~/.beads/shared-server/` |
+| `dolt.shared-server` | `--shared-server` (init only) | `BEADS_DOLT_SHARED_SERVER` | `false` | Share a single Dolt server across all projects at `~/.beads/shared-server/` |
 | `db` | `--db` | `BD_DB` | (auto-discover) | Database path |
 | `actor` | `--actor` | `BEADS_ACTOR` | `git config user.name` | Actor name for audit trail (see below) |
 
@@ -70,9 +71,13 @@ When using the **Dolt backend**, there are two different kinds of “commit”:
 - **SQL transaction commit**: what happens when a `bd` command updates tables successfully (durable in the Dolt *working set*).
 - **Dolt version-control commit**: what records those changes into Dolt’s *history* (visible in `bd vc log`, push/pull/merge workflows).
 
-By default, `bd` is configured to **auto-commit Dolt history after each successful write command**:
+Set `dolt.auto-commit` explicitly to `on`, `off`, or `batch` when history
+policy matters. This compatibility source has inconsistent default descriptions:
+Viper defaults to `on` and startup copies that value, root flag help says `off`,
+and the empty-value fallback selects server `off` / embedded `on`. Do not infer
+a universal default from a single help string.
 
-- **Default**: `dolt.auto-commit: on`
+- **Explicit per-write history**: `dolt.auto-commit: on`
 - **Disable for a single command**:
 
 ```bash
@@ -90,7 +95,9 @@ dolt:
 
 ### Auto-Backup
 
-Periodic Dolt-native backup to `.beads/backup/` provides an off-machine recovery path. Local Dolt snapshots (via `dolt.auto-commit`) remain the primary safety net; backup is a secondary layer.
+Periodic Dolt-native backup to `.beads/backup/` provides a local recovery path.
+Off-machine recovery requires copying it to independent storage or configuring
+an appropriate remote destination. Local Dolt snapshots (via `dolt.auto-commit`) remain the primary safety net; backup is a secondary layer.
 
 This is a full database backup, unlike `bd export` or `.beads/issues.jsonl`.
 It preserves Dolt state such as tables, branches, commit history, and
@@ -345,21 +352,12 @@ Configuration keys use dot-notation namespaces to organize settings:
 - `max_collision_prob` - Maximum collision probability for adaptive hash IDs (default: 0.25)
 - `min_hash_length` - Minimum hash ID length (default: 4)
 - `max_hash_length` - Maximum hash ID length (default: 8)
-- `import.orphan_handling` - How to handle hierarchical issues with missing parents during import (default: `allow`)
 - `import.path` - Input filename relative to `.beads/` for implied JSONL imports, including `bd init --from-jsonl` and empty-DB auto-import (default: `issues.jsonl`). Use a relative filename/path such as `beads.jsonl` so the import remains project-local and portable across machines.
 - `export.auto` - Refresh the JSONL export after every write command (default: `false`). This is for viewers, interchange, and issue-level migration; it is not cross-machine sync and not a full database backup.
 - `export.path` - Output filename relative to `.beads/` (default: `issues.jsonl`)
 - `export.interval` - Minimum time between auto-exports (default: `60s`)
 - `export.git-add` - Run `git add` on the export file after writing (default: `false`)
-- `export.error_policy` - Error handling strategy for exports (default: `strict`)
-- `export.retry_attempts` - Number of retry attempts for transient errors (default: 3)
-- `export.retry_backoff_ms` - Initial backoff in milliseconds for retries (default: 100)
-- `export.skip_encoding_errors` - Skip issues that fail JSON encoding (default: false)
-- `export.write_manifest` - Write .manifest.json with export metadata (default: false)
-- `auto_export.error_policy` - Override error policy for auto-exports (default: `best-effort`)
 - `import.auto` - Legacy hook fallback that imports JSONL after git merge/checkout only when no Dolt remote is configured (default: `true`)
-- `sync.branch` - Name of the dedicated sync branch for beads data (see docs/PROTECTED_BRANCHES.md)
-- `sync.require_confirmation_on_mass_delete` - Require interactive confirmation before pushing when >50% of issues vanish during a merge AND more than 5 issues existed before (default: `false`)
 
 **Upgrade note:** `export.auto` and `export.git-add` are opt-in. Older releases
 briefly made `.beads/issues.jsonl` look like the default git-tracked source of
@@ -446,22 +444,14 @@ bd create "Second issue" -p 2
 # → bd-2
 ```
 
-**Migration warning:** If you switch an existing repository to counter mode, seed the counter
-to avoid collisions with existing IDs. Find your highest current integer ID and set the counter
-accordingly:
+**Switching an existing repository:** a missing counter is seeded from the
+maximum existing numeric suffix for that prefix before allocation. An existing
+counter is retained. Manual SQL or create/delete loops are not required to
+initialize a missing counter. For a complete inventory, including closed issues:
 
 ```bash
-# Check your highest existing sequential ID (if any)
-bd list --json | jq -r '.[].id' | grep -E '^bd-[0-9]+$' | sort -t- -k2 -n | tail -1
-
-# Seed the counter (e.g., if highest existing ID is bd-42)
-bd config set issue_id_mode counter
-# The counter auto-initializes at 0; new issues start at 1
-# If you already have bd-1 through bd-42, manually set counter:
-# (no direct CLI for seeding — use bd dolt sql or create/delete N issues)
+bd list --status all --limit 0 --json
 ```
-
-For fresh repositories switching to counter mode before any issues exist, no seeding is needed.
 
 **Per-prefix counter isolation:**
 
@@ -509,141 +499,19 @@ bd config set min_hash_length "5"
 
 See [ADAPTIVE_IDS.md](ADAPTIVE_IDS.md) for detailed documentation.
 
-### Example: Export Error Handling
+### Legacy configuration keys
 
-Controls how export operations handle errors when fetching issue data (labels, comments, dependencies).
+Old configurations may still contain `export.error_policy`,
+`auto_export.error_policy`, `export.retry_attempts`, `export.retry_backoff_ms`,
+`export.skip_encoding_errors`, `export.write_manifest`, or
+`import.orphan_handling`. They do not establish those behaviors in the current
+Dolt-native push/pull path. The export command directly returns encoding and
+write errors; Dolt push/pull do not run the older JSONL export/import pipeline.
 
-```bash
-# Strict: Fail fast on any error (default for user-initiated exports)
-bd config set export.error_policy "strict"
-
-# Best-effort: Skip failed operations with warnings (good for auto-export)
-bd config set export.error_policy "best-effort"
-
-# Partial: Retry transient failures, skip persistent ones with manifest
-bd config set export.error_policy "partial"
-bd config set export.write_manifest "true"
-
-# Required-core: Fail on core data (issues/deps), skip enrichments (labels/comments)
-bd config set export.error_policy "required-core"
-
-# Customize retry behavior
-bd config set export.retry_attempts "5"
-bd config set export.retry_backoff_ms "200"
-
-# Skip individual issues that fail JSON encoding
-bd config set export.skip_encoding_errors "true"
-
-# Auto-export uses different policy (background operation)
-bd config set auto_export.error_policy "best-effort"
-```
-
-**Policy details:**
-
-- **`strict`** (default) - Fail immediately on any error. Ensures complete exports but may block on transient issues like database locks. Best for critical exports and migrations.
-
-- **`best-effort`** - Skip failed batches with warnings. Continues export even if labels or comments fail to load. Best for auto-exports and background sync where availability matters more than completeness.
-
-- **`partial`** - Retry transient failures (3x by default), then skip with manifest file. Creates `.manifest.json` alongside JSONL documenting what succeeded/failed. Best for large databases with occasional corruption.
-
-- **`required-core`** - Fail on core data (issues, dependencies), skip enrichments (labels, comments) with warnings. Best when metadata is secondary to issue tracking.
-
-**When to use each mode:**
-
-- Use `strict` (default) for production backups and critical exports
-- Use `best-effort` for auto-exports (default via `auto_export.error_policy`)
-- Use `partial` when you need visibility into export completeness
-- Use `required-core` when labels/comments are optional
-
-**Context-specific behavior:**
-
-User-initiated exports (`bd dolt push`, manual export commands) use `export.error_policy` (default: `strict`).
-
-Auto-exports (git hook sync) use `auto_export.error_policy` (default: `best-effort`), falling back to `export.error_policy` if not set.
-
-**Example: Different policies for different contexts:**
-
-```bash
-# Critical project: strict everywhere
-bd config set export.error_policy "strict"
-
-# Development project: strict user exports, permissive auto-exports
-bd config set export.error_policy "strict"
-bd config set auto_export.error_policy "best-effort"
-
-# Large database with occasional corruption
-bd config set export.error_policy "partial"
-bd config set export.write_manifest "true"
-bd config set export.retry_attempts "5"
-```
-
-### Example: Import Orphan Handling
-
-Controls how imports handle hierarchical child issues when their parent is missing from the database:
-
-```bash
-# Strictest: Fail import if parent is missing (safest, prevents orphans)
-bd config set import.orphan_handling "strict"
-
-# Auto-resurrect: Search JSONL history and recreate missing parents as tombstones
-bd config set import.orphan_handling "resurrect"
-
-# Skip: Skip orphaned issues with warning (partial import)
-bd config set import.orphan_handling "skip"
-
-# Allow: Import orphans without validation (default, most permissive)
-bd config set import.orphan_handling "allow"
-```
-
-**Mode details:**
-
-- **`strict`** - Fails immediately if a child's parent is missing. Use when database integrity is critical.
-- **`resurrect`** - Searches for missing parents and recreates them as tombstones (Status=Closed, Priority=4). Preserves hierarchy with minimal data. Dependencies are also resurrected on best-effort basis.
-- **`skip`** - Skips orphaned children with a warning. Partial import succeeds but some issues are excluded.
-- **`allow`** - Imports orphans without parent validation. Most permissive. **This is the default** because it ensures all data is imported even if hierarchy is temporarily broken.
-
-These modes apply when bootstrapping a database with `bd init --from-jsonl` or when `bd dolt pull` merges remote data:
-
-```bash
-# Override config for a single pull
-bd config set import.orphan_handling "resurrect"
-bd dolt pull  # Respects import.orphan_handling setting
-```
-
-**When to use each mode:**
-
-- Use `allow` (default) for daily sync - ensures no data loss
-- Use `resurrect` when pulling from remotes that had parent deletions
-- Use `strict` only when you need to guarantee parent existence
-- Use `skip` rarely - only when you want to selectively import a subset
-
-### Example: Sync Safety Options
-
-Controls for the sync branch workflow (see docs/PROTECTED_BRANCHES.md):
-
-```bash
-# Configure sync branch (required for protected branch workflow)
-bd config set sync.branch beads-sync
-
-# Enable mass deletion protection (optional, default: false)
-# When enabled, if >50% of issues vanish during a merge AND more than 5
-# issues existed before the merge, bd dolt push will:
-# 1. Show forensic info about vanished issues
-# 2. Prompt for confirmation before pushing
-bd config set sync.require_confirmation_on_mass_delete "true"
-```
-
-**When to enable `sync.require_confirmation_on_mass_delete`:**
-
-- Multi-user workflows where accidental mass deletions could propagate
-- Critical projects where data loss prevention is paramount
-- When you want manual review before pushing large changes
-
-**When to keep it disabled (default):**
-
-- Single-user workflows where you trust your local changes
-- CI/CD pipelines that need non-interactive sync
-- When you want hands-free automation
+`sync.branch` belongs to the former JSONL synchronization design.
+`sync.require_confirmation_on_mass_delete` remains a declared configuration key,
+but current Dolt push does not enforce that confirmation. Do not rely on these
+legacy settings as active synchronization or deletion safeguards.
 
 ### Example: Jira Integration
 
@@ -1010,7 +878,7 @@ jira_project = get_config("jira.project")
 1. **Use namespaces**: Prefix keys with integration name (e.g., `jira.*`, `linear.*`)
 2. **Hierarchical keys**: Use dots for structure (e.g., `jira.status_map.open`)
 3. **Document your keys**: Add comments in integration scripts
-4. **Security**: Store tokens in config, but ensure `.beads/dolt/` and `.beads/*.db` are in `.gitignore` (bd does this automatically)
+4. **Security**: Prefer environment injection for integration secrets. Ignoring database files in Git does not protect secrets stored in a Dolt-synchronized configuration table. Config-file secret hints and guards help with supported keys; they do not provide universal synchronization isolation.
 5. **Per-project**: Configuration is project-specific, so each repo can have different settings
 
 ## Integration with bd Commands

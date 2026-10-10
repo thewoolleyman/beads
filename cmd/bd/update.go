@@ -32,6 +32,10 @@ create, update, show, or close operation).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("update")
 
+		if cmd.Flags().Changed("conditional-metadata-file") {
+			return runConditionalMetadataUpdate(cmd, args)
+		}
+
 		evt := metrics.NewCommandEvent("update")
 		defer func() {
 			if c := metrics.Global(); c != nil {
@@ -660,6 +664,7 @@ func toJSONValue(s string) json.RawMessage {
 }
 
 func init() {
+	updateCmd.Flags().String("conditional-metadata-file", "", "Atomically replace metadata and append comments from a guarded JSON request file (- for stdin); regular SQL-server issues only")
 	updateCmd.Flags().StringP("status", "s", "", "New status")
 	registerPriorityFlag(updateCmd, "")
 	updateCmd.Flags().String("title", "", "New title")

@@ -1,17 +1,21 @@
 # OpenTelemetry Data Model
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-10-10
 
 Freshness source: `internal/telemetry/`, `internal/storage/dolt/store.go`,
 `internal/compact/haiku.go`, `cmd/bd/find_duplicates.go`, and hook execution
 code under `internal/hooks/`.
 
-Complete schema of all telemetry events emitted by Beads. Each event consists of:
+Selected instrumentation inventory for the v1.2.2 compatibility source.
+Telemetry is opt-in through `BD_OTEL_METRICS_URL` or `BD_OTEL_STDOUT=true`.
+Metrics export to the explicitly configured URL and/or stdout; there is no
+default VictoriaMetrics destination. Traces currently export only to stdout.
+`BD_OTEL_LOGS_URL` is reserved, not an implemented logs exporter. Not every
+span has a corresponding metric.
 
-1. **Span** (→ any OTLP v1.x+ backend, stdout when `BD_OTEL_STDOUT=true`) with full structured attributes
-2. **Metric counter/histogram** (→ any OTLP v1.x+ backend, defaults to VictoriaMetrics) for aggregation
-
-All command spans automatically carry `bd.command`, `bd.version`, `bd.args` from startup context; `bd.actor` is added after actor resolution.
+The root command span carries `bd.command`, `bd.version`, and `bd.args`;
+`bd.actor` is added after actor resolution. Parent context does not copy these
+attributes onto every child span.
 
 ---
 
@@ -40,7 +44,7 @@ OTel SDK names use **dot notation** internally. Prometheus-compatible backends (
 | Event | Category | Status |
 |-------|----------|--------|
 | `bd.command` | CLI | ✅ Implemented |
-| `storage.*` | Storage | ✅ Implemented |
+| `storage.*` | Storage | Decorator implemented; not wired into CLI storage |
 | `dolt.*` | Dolt Backend | ✅ Implemented |
 | `doltserver.*` | Server Lifecycle | 🔲 Roadmap (Tier 1) |
 | `hook.exec` | Hooks | ✅ Implemented (span only) |
@@ -52,12 +56,15 @@ OTel SDK names use **dot notation** internally. Prometheus-compatible backends (
 
 ### 1.1 Instance
 
-The outermost grouping. Derived at command startup time from the machine hostname and the working directory.
+Resources use the OTel host and process detectors plus service attributes.
+There is no synthesized host-plus-working-directory identity or `WithOS`
+resource configured by this initialization path.
 
 | Attribute | Type | Description |
 |---|---|---|
-| `host` | string | System hostname |
-| `os` | string | System OS information |
+| `host.name` | string | Host detector name |
+| `process.pid` | integer | Process detector identity |
+| `service.name` | string | Configured Beads service identity |
 
 ### 1.2 Command
 
@@ -88,6 +95,11 @@ Emitted once per `bd` subcommand execution. Anchors all subsequent events for th
 ---
 
 ## 3. Storage Events
+
+These events belong to `InstrumentedStorage`, constructed by `WrapStorage`.
+This source tree defines the wrapper but does not call it from the CLI.
+Consequently these definitions do not establish emission on current CLI
+storage operations. A caller must explicitly install the decorator.
 
 ### `storage.CreateIssue`
 
@@ -207,6 +219,10 @@ Emitted for DOLT_PUSH operations.
 |---|---|---|
 | `dolt.branch` | string | Branch being pushed |
 
+### `dolt.force_push`
+
+The force-push path has its own span, distinct from ordinary `dolt.push`.
+
 ### `dolt.pull`
 
 Emitted for DOLT_PULL operations.
@@ -296,21 +312,23 @@ One span per Anthropic API call. The `bd.ai.operation` attribute distinguishes t
 | `bd.ai.operation` | string | `"compact"` or `"find_duplicates"` |
 | `bd.ai.input_tokens` | int | Input tokens consumed |
 | `bd.ai.output_tokens` | int | Output tokens generated |
-| `bd.ai.attempts` | int | Number of attempts (including retries) |
+| `bd.ai.attempts` | int | Compaction only: attempts including retries |
 | `bd.ai.batch_size` | int | Candidate pairs evaluated (`find_duplicates` only) |
 
-**Retry policy**: exponential backoff, up to 3 attempts, on HTTP 429, 5xx, and network timeout errors.
+**Compaction retry policy**: initial attempt plus up to three retries with
+exponential backoff for retryable errors. Duplicate detection does not record
+`bd.ai.attempts` or use this custom retry loop.
 
 ---
 
-## 8. Metrics Reference
+## 8. Selected Metrics Reference
 
 | Metric (code name) | Type | Labels | Status |
 |--------|------|--------|--------|
-| `bd.storage.operations` | Counter | `db.operation` | ✅ Implemented |
-| `bd.storage.operation.duration` | Histogram (ms) | `db.operation` | ✅ Implemented |
-| `bd.storage.errors` | Counter | `db.operation` | ✅ Implemented |
-| `bd.issue.count` | Gauge | `status` | ✅ Implemented |
+| `bd.storage.operations` | Counter | `db.operation` + method attributes | Decorator only |
+| `bd.storage.operation.duration` | Histogram (ms) | Method attributes, without `db.operation` | Decorator only |
+| `bd.storage.errors` | Counter | Method attributes, without `db.operation` | Decorator only |
+| `bd.issue.count` | Gauge | `status` | Decorator only |
 | `bd.db.retry_count` | Counter | — | ✅ Implemented |
 | `bd.db.lock_wait_ms` | Histogram | — | 🔲 Registered, not recorded |
 | `bd.db.circuit_trips` | Counter | — | ✅ Implemented |
@@ -324,7 +342,7 @@ One span per Anthropic API call. The `bd.ai.operation` attribute distinguishes t
 ## 9. Recommended Indexed Attributes
 
 ```
-host, os, bd.command, bd.version, bd.actor, db.operation, db.statement,
+host.name, process.pid, service.name, bd.command, bd.version, bd.actor, db.operation, db.statement,
 bd.issue.id, bd.issue.type, hook.event, hook.path, bd.ai.model, bd.ai.operation
 ```
 
@@ -334,50 +352,27 @@ bd.issue.id, bd.issue.type, hook.event, hook.path, bd.ai.model, bd.ai.operation
 
 Environment variables, backend compatibility, Dolt system tables, and roadmap are documented in [otel-architecture.md](otel-architecture.md) to avoid duplication.
 
-Key variables: `BD_OTEL_METRICS_URL`, `BD_OTEL_LOGS_URL`, `BD_OTEL_STDOUT`.
+Active exporter variables: `BD_OTEL_METRICS_URL`, `BD_OTEL_STDOUT`.
+`BD_OTEL_LOGS_URL` is reserved.
 
 ---
 
-## Appendix: Source Reference Audit
+## Appendix: Current Source Review
 
-Audited against **`main` @ `371df32b`**. All line numbers below refer to that commit.
+The review date covers source inspection, not evidence that exporters were run.
+Use symbols rather than old line numbers from historical `main@371df32b`:
 
-Every metric name, span name, and attribute listed in this document is backed by a specific source location. This table exists to prevent documentation drift and to make re-verification straightforward after code changes.
+| Surface | Source |
+| --- | --- |
+| Resource and exporter configuration | `internal/telemetry/telemetry.go` initialization |
+| Storage decorator and metric labels | `internal/telemetry/storage.go`, `WrapStorage` and operation recording |
+| Dolt spans and instrument registration | `internal/storage/dolt/store.go` |
+| Serialization/write retries | `internal/storage/dolt/transaction.go` |
+| AI compaction retry and metrics | `internal/compact/haiku.go` |
+| Duplicate detection spans | `cmd/bd/find_duplicates.go` |
+| Hook spans and output events | `internal/hooks/` |
 
-### Metrics (`internal/telemetry/storage.go`, `internal/storage/dolt/store.go`, `internal/compact/haiku.go`)
-
-| Metric (SDK name) | Type | Source |
-|-------------------|------|--------|
-| `bd.storage.operations` | Counter | `storage.go:38` — `m.Int64Counter("bd.storage.operations")` |
-| `bd.storage.operation.duration` | Histogram | `storage.go:41` — `m.Float64Histogram("bd.storage.operation.duration")` |
-| `bd.storage.errors` | Counter | `storage.go:45` — `m.Int64Counter("bd.storage.errors")` |
-| `bd.issue.count` | Gauge | `storage.go:48` — `m.Int64Gauge("bd.issue.count")` |
-| `bd.db.retry_count` | Counter | `store.go:302` — `m.Int64Counter("bd.db.retry_count")` |
-| `bd.db.lock_wait_ms` | Histogram | `store.go:306` — registered; `.Record()` not called anywhere |
-| `bd.db.circuit_trips` | Counter | `store.go:310` — `m.Int64Counter("bd.db.circuit_trips")` |
-| `bd.db.circuit_rejected` | Counter | `store.go:314` — `m.Int64Counter("bd.db.circuit_rejected")` |
-| `bd.ai.input_tokens` | Counter | `haiku.go:110` — `m.Int64Counter("bd.ai.input_tokens")` |
-| `bd.ai.output_tokens` | Counter | `haiku.go:114` — `m.Int64Counter("bd.ai.output_tokens")` |
-| `bd.ai.request.duration` | Histogram | `haiku.go:118` — `m.Float64Histogram("bd.ai.request.duration")` |
-
-### Spans and attributes
-
-| Span name | Attributes | Source |
-|-----------|-----------|--------|
-| `bd.command.<name>` | `bd.command`, `bd.version`, `bd.args` | `cmd/bd/main.go:262-266` |
-| `bd.command.<name>` | `bd.actor` (added later) | `cmd/bd/main.go:474` |
-| `storage.<op>` (all methods) | `db.operation` + method-specific attrs | `internal/telemetry/storage.go:62-69` |
-| `dolt.query` | `db.operation="query"`, `db.statement`, `db.system="dolt"` | `store.go:400-405` |
-| `dolt.exec` | `db.operation="exec"`, `db.statement`, `db.system="dolt"` | `store.go:363-368` |
-| `dolt.query_row` | `db.operation="query_row"`, `db.statement`, `db.system="dolt"` | `store.go:429-434` |
-| `dolt.commit` | `commit_msg` | `store.go:1086` |
-| `dolt.push` | `dolt.branch` | `store.go:1231, 1266` |
-| `dolt.pull` | `dolt.branch` | `store.go:1295` |
-| `dolt.merge` | `dolt.merge_branch` | `store.go:1389` |
-| `dolt.branch` | `dolt.branch` | `store.go:1357` |
-| `dolt.checkout` | `dolt.branch` | `store.go:1372` |
-| `hook.exec` | `hook.event`, `hook.path`, `bd.issue_id` | `hooks_unix.go:31-36` |
-| `hook.exec` events | `hook.stdout` / `hook.stderr` with `output`, `bytes` | `hooks_otel.go:14, 20` |
-| `anthropic.messages.new` | `bd.ai.model`, `bd.ai.operation` | `haiku.go:129-130` |
-| `anthropic.messages.new` | `bd.ai.input_tokens`, `bd.ai.output_tokens`, `bd.ai.attempts` | `haiku.go:165-167` |
-| `anthropic.messages.new` | `bd.ai.batch_size` (find_duplicates only) | `find_duplicates.go:433` |
+The selected table above is not exhaustive. Dolt also registers serialization
+errors, write retries, connection acquisition, and pool wait/open/in-use/idle/
+maximum instruments; inspect `store.go` and `transaction.go` for their exact
+names and recording sites. Server-lifecycle events remain labelled roadmap.
